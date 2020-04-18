@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Uygar</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+
+</head>
+
+<body>
+
+
+
+
+    <video id="myvideoTag" autoplay muted="muted"></video>
+    <video id="theirvideoTag" autoplay></video>
+
+    <div class="actions-holder">
+        <a id="muteMyself" class="input-styled" href="javascript:void(0)">Mute Myself</a>
+        <a id="pauseMyVideo" class="input-styled" href="javascript:void(0)">Pause Video</a>
+
+    </div>
+
+    <div>
+        <label>Firstname</label><input id="myName" type="text" class="" />
+        <label>Message</label><input id="myMessage" type="text" class="" />
+        <input id="sendMessage" type="submit" />
+        <div id="chatArea">This is all the messages</br></div>
+        <div id="signalingArea"></br></div>
+    </div>
+
+
+    <script>
+
+
+
+        var myName = document.querySelector("#myName");
+        var myMessage = document.querySelector("#myMessage");
+        var sendMessage = document.querySelector("#sendMessage");
+        var chatArea = document.querySelector("#chatArea");
+        var signalingArea = document.querySelector("#signalingArea");
+        var ROOM = "chat";
+        var SIGNAL_ROOM = "signal_room";
+
+        var dataChannelOptions = {
+				ordered: false, //no guaranteed delivery, unreliable but faster 
+				maxRetransmitTime: 1000, //milliseconds
+			};
+
+
+        var config = {
+            'iceServers': [{
+                'url': 'stun:stun.l.google.com:19302'
+            }]
+        };
+
+        var rtcPeerConn;
+
+        var dataChannel;
+
+
+        var myvideoArea = document.querySelector("#myvideoTag");
+        var theirvideoArea = document.querySelector("#theirvideoTag");
+
+
+
+
+
+        io = io.connect();
+        io.emit('ready', { "chat_room": ROOM, "signal_room": SIGNAL_ROOM });
+
+        io.emit('signal', { "type": "user_here", "message": "ready for call?", "room": SIGNAL_ROOM });
+
+        io.on('signaling_message', function (data) {
+            displaySignalMessage("Signal received:" + data.type);
+
+            if (!rtcPeerConn)
+                startSignaling();
+
+
+            if (data.type != "user_here") {
+                var message = JSON.parse(data.message);
+                if (message.sdp) {
+                    rtcPeerConn.setRemoteDescription(new RTCSessionDescription(message.sdp), function () {
+                        // if we received and offer, we need to answer
+                        if (rtcPeerConn.remoteDescription.type == 'offer') {
+                            rtcPeerConn.createAnswer(sendLocalDesc, logError);
+                        }
+                    }, logError);
+                }
+                else {
+                    rtcPeerConn.addIceCandidate(new RTCIceCandidate(message.candidate));
+                }
+            }
+        });
+
+        function startSignaling() {
+            displaySignalMessage("started signaling...");
+
+            rtcPeerConn = new webkitRTCPeerConnection(config, null);
+
+            dataChannel = rtcPeerConn.createDataChannel('textmessages', dataChannelOptions);
+
+            dataChannel.onopen = dataChannelStateChanged;
+
+            rtcPeerConn.ondatachannel = receiveDataChannel;
+
+            rtcPeerConn.onicecandidate = function (evt) {
+                if (evt.candidates)
+                    io.emit('signal', {
+                        "type": "ice candidate", "message": JSON.stringify({
+                            'candidate': evt.candidate
+                        }), "room": SIGNAL_ROOM
+                    });
+                displaySignalMessage("completed the ice candiate..");
+            };
+
+            rtcPeerConn.onnegotiationneeded = function () {
+                displaySignalMessage("on negotionaton called");
+                rtcPeerConn.createOffer(sendLocalDesc, logError);
+            }
+
+            rtcPeerConn.onaddstream = function (evt) {
+                displaySignalMessage("going to add their stream...");
+                theirvideoArea.srcObject = evt.stream;
+            };
+
+            // get a local stream, show it in our video tag and add it to be sent 
+            navigator.getUserMedia = navigator.getUserMedia ||
+                navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+            navigator.getUserMedia({
+                'audio': false,
+                'video': true
+            }, function (stream) {
+                displaySignalMessage("Going to display my stream...");
+                myvideoArea.srcObject = stream;
+                rtcPeerConn.addStream(stream);
+            }, logError);
+
+
+        }
+
+        function dataChannelStateChanged() {
+				if (dataChannel.readyState === 'open') {
+					console.log("Data Channel open");
+					dataChannel.onmessage = receiveDataChannelMessage;
+				}
+			}
+			
+			function receiveDataChannel(event) {
+				console.log("Receiving a data channel");
+				dataChannel = event.channel;
+				dataChannel.onmessage = receiveDataChannelMessage;
+            }
+            
+            
+			function receiveDataChannelMessage(event) {
+                console.log("Incoming Message");
+                displayMessage(event.data);
+
+            }
+
+        function sendLocalDesc(desc) {
+            rtcPeerConn.setLocalDescription(desc, function () {
+                displaySignalMessage("sending local description");
+                io.emit('signal', {
+                    "type": "SDP", "message": JSON.stringify({
+                        'sdp':
+                            rtcPeerConn.localDescription
+                    }), "room": SIGNAL_ROOM
+                });
+            }, logError);
+        }
+
+        function logError(error) {
+            displaySignalMessage(error.name + ': ' + error.message);
+
+        }
+
+
+
+
+        io.on('annouce', function (data) {
+            displayMessage(data.message);
+
+        });
+
+        io.on('message', function (data) {
+            displayMessage(data.author + ": " + data.message);
+
+        });
+
+        function displayMessage(message) {
+            chatArea.innerHTML = chatArea.innerHTML + "<br/>" + message;
+        }
+
+        function displaySignalMessage(message) {
+          
+        }
+
+
+        sendMessage.addEventListener('click', function (ev) {
+
+            //io.emit('send', { "author": myName.value, "message": myMessage.value, "room": ROOM });
+            dataChannel.send(myName.value + ": " + myMessage.value);
+            displayMessage(myName.value + ": " + myMessage.value);
+            ev.preventDefault();
+
+        }, false);
+
+
+        ////this is the mute and unmute code
+        var muteMyself = document.querySelector("#muteMyself");
+        var pauseMyVideo = document.querySelector("#pauseMyVideo");
+
+        muteMyself.addEventListener('click', function (ev) {
+            console.log("muting/unmuting myself");
+            var streams = rtcPeerConn.getLocalStreams();
+            for (var stream of streams) {
+                for (var audioTrack of stream.getAudioTracks()) {
+                    if (audioTrack.enabled) { muteMyself.innerHTML = "Unmute" }
+                    else { muteMyself.innerHTML = "Mute Myself" }
+                    audioTrack.enabled = !audioTrack.enabled;
+                }
+                console.log("Local stream: " + stream.id);
+            }
+            ev.preventDefault();
+        }, false);
+
+        pauseMyVideo.addEventListener('click', function (ev) {
+            console.log("pausing/unpausing my video");
+            var streams = rtcPeerConn.getLocalStreams();
+            for (var stream of streams) {
+                for (var videoTrack of stream.getVideoTracks()) {
+                    if (videoTrack.enabled) { pauseMyVideo.innerHTML = "Start Video" }
+                    else { pauseMyVideo.innerHTML = "Pause Video" }
+                    videoTrack.enabled = !videoTrack.enabled;
+                }
+                console.log("Local stream: " + stream.id);
+            }
+            ev.preventDefault();
+        }, false);
+
+
+
+
+
+
+
+
+    </script>
+
+</body>
+
+</html>
